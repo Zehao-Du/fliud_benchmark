@@ -12,8 +12,8 @@
 
 | 主线 | 内容 |
 |------|------|
-| **仿真场景** | 两个双 backend 场景（mock 无需 Isaac；isaac 接真实物理引擎），覆盖液体（PhysX PBD 粒子）和气体（NvFlow 体积烟雾） |
-| **FluidBench** | 12 个标准化任务（6 气体 + 6 液体，easy/medium/hard），统一评估接口，含 success/failure demo 视频 |
+| **仿真场景** | 双 backend 场景（mock 无需 Isaac；isaac 接真实物理引擎），覆盖液体（PhysX PBD 粒子）和气体（NvFlow 体积烟雾） |
+| **FluidBench** | 16 个标准化任务（10 气体 + 6 液体，easy/medium/hard），统一评估接口，含 success/failure demo 视频 |
 | **数据采集 + 策略学习** | 批量 rollout → HDF5 → Diffusion Policy 训练/推理全链路 |
 | **基线对比** | Random / BC-NoFluid / DiffusionPolicy，量化展示流体感知的重要性 |
 
@@ -35,9 +35,9 @@ python source/.../franka_stir_liquid.py --backend mock
 python source/.../franka_meat_on_grill.py --backend mock --variation chicken
 ```
 
-### FluidBench（12 任务，已验证）
+### FluidBench（12 任务已验证 + 4 任务开发中，共 16 任务）
 
-**气体场景（烤架）：**
+**气体场景 A — 烤架（6 任务，已验证）：**
 
 | 任务 ID | 难度 | 描述 |
 |---------|------|------|
@@ -48,7 +48,18 @@ python source/.../franka_meat_on_grill.py --backend mock --variation chicken
 | `grill_chicken_offset_start` | Medium | 肉类初始位置偏移 |
 | `grill_steak_narrow_target` | Hard | 目标区域缩小 40%，需精确放置 |
 
-**液体场景（浸没抓取）：**
+**气体场景 B — 蒸汽/喷雾（4 任务，开发中）：**
+
+| 任务 ID | 难度 | 描述 | 核心动作 |
+|---------|------|------|---------|
+| `steam_pot_place` | Easy | 蒸汽锅内放置物体 | 抓取物体 → 穿越锅口蒸汽 → 放入指定区域 |
+| `steam_lid_open_close` | Medium | 揭开锅盖并重新盖回 | 抓取把手 → 提起锅盖 → 蒸汽释放 → 对准盖回 |
+| `spray_chamber_tray` | Medium | 喷雾处理箱内放置托盘 | 抓取托盘 → 送入箱体开口 → 低能见度下对准支撑架 |
+| `steam_valve_close` | Hard | 蒸汽泄漏口旁关闭旋钮 | 穿越泄漏蒸汽 → 接触旋钮 → 旋转到关闭位置 |
+
+气体效果均复用 `franka_meat_on_grill.py` 的 NvFlow/合成粒子云系统，以体积特效或粒子喷射模拟局部视野干扰，不做真实流体动力学计算。
+
+**液体场景（6 任务，已验证）：**
 
 | 任务 ID | 难度 | 描述 |
 |---------|------|------|
@@ -59,7 +70,7 @@ python source/.../franka_meat_on_grill.py --backend mock --variation chicken
 | `liquid_pick_high_lift` | Medium | 需将物体提升超过容器边缘 |
 | `liquid_pick_quick_grasp` | Hard | 极短抓取窗口 |
 
-Oracle policy 在全部 12 个任务上成功率 **100%**（mock backend 验证）。
+Oracle policy 在已验证的 12 个任务上成功率 **100%**（mock backend）。
 
 ```bash
 # 运行 benchmark（oracle 上界）
@@ -120,6 +131,28 @@ xvfb-run -a -s "-screen 0 1920x1080x24 +extension GLX" \
 
 ## TODO（RoadMap）
 
+### Phase 3.5 — 新增蒸汽/喷雾场景（优先级：高）
+
+基于 `franka_meat_on_grill.py` 的气体系统，实现以下 4 个新场景：
+
+- [ ] `steam_pot_place`：蒸汽锅内放置物体
+  - 锅体固定刚体 + 锅内目标区域；待抓物体放于旁侧托盘
+  - 蒸汽持续从锅口向上扩散（NvFlow 体积烟雾或粒子云）
+  - 阶段：抓取 → 提升 → 移动到锅口 → 下放入目标区域 → 释放 → 归位
+
+- [ ] `steam_lid_open_close`：揭开锅盖并重新盖回
+  - 锅盖为独立刚体，带可抓取把手；揭盖后蒸汽从锅口触发释放
+  - 阶段：抓把手 → 竖直提起 → 平移悬停 → 对准锅口 → 缓慢盖回 → 归位
+
+- [ ] `spray_chamber_tray`：喷雾处理箱内放置托盘
+  - 处理箱固定，箱内有支撑架/槽位；箱内喷头持续释放雾状喷雾
+  - 阶段：抓托盘 → 提升 → 对准箱口 → 送入箱内 → 对准支撑架下放 → 释放 → 归位
+
+- [ ] `steam_valve_close`：蒸汽泄漏口旁关闭旋钮
+  - 旋钮为 revolute joint 单自由度刚体；泄漏口持续向旋钮周围喷射蒸汽
+  - 旋钮转到目标角度后蒸汽停止；以末端接触推动旋钮转动
+  - 阶段：移动到旋钮前方 → 对齐旋转轴 → 接触并旋转到关闭位置 → 退出 → 归位
+
 ### Phase 4 — 基线对比实验（优先级：高）
 
 目标：量化展示「无流体感知」vs「有流体感知」策略的性能差距。
@@ -159,7 +192,7 @@ Oracle (上界)                  100%        100%      100%
 
 ```
 benchmark/
-  tasks.py            ← 12 个任务定义
+  tasks.py            ← 16 个任务定义（12 已验证 + 4 开发中）
   run_benchmark.py    ← 评估 oracle/random/diffusion，输出成绩表
 
 tools/
