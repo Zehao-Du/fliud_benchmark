@@ -1,7 +1,7 @@
 """Benchmark task definitions for fluid-involved robot manipulation.
 
 Each BenchmarkTask specifies a scene, config overrides, and expected success criteria.
-Two groups of 6 tasks each cover gas-involved (grill) and liquid-involved manipulation.
+Three groups cover gas-involved (grill), liquid-involved, and steam/spray manipulation.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -11,11 +11,12 @@ from typing import Any, Dict, List
 @dataclass
 class BenchmarkTask:
     task_id: str
-    scene: str                  # "liquid" | "grill"
+    scene: str                  # "liquid" | "grill" | "steam"
     description: str
     difficulty: str             # "easy" | "medium" | "hard"
     preset: str = "default"
     variation: str = "chicken"  # grill only
+    task_type: str = ""         # steam only: one of TASK_TYPES in franka_steam_tasks.py
     seed: int = 0
     config_overrides: Dict[str, Any] = field(default_factory=dict)
     # Config overrides that make the scripted policy FAIL (for failure demo videos)
@@ -200,7 +201,69 @@ LIQUID_TASKS: List[BenchmarkTask] = [
     ),
 ]
 
-ALL_TASKS: List[BenchmarkTask] = GRILL_TASKS + LIQUID_TASKS
+# ---------------------------------------------------------------------------
+# Steam/spray tasks (new gas scenes — Phase 3.5)
+# ---------------------------------------------------------------------------
+
+STEAM_TASKS: List[BenchmarkTask] = [
+    BenchmarkTask(
+        task_id="steam_pot_place",
+        scene="steam",
+        task_type="steam_pot_place",
+        description="Pick object from table and place it inside a steaming pot.",
+        difficulty="easy",
+        seed=0,
+        config_overrides={},
+        failure_overrides={
+            # Robot descends 50 cm above object → never within grasp distance
+            "task": {"grasp_depth_offset": 0.50},
+        },
+    ),
+    BenchmarkTask(
+        task_id="steam_lid_open_close",
+        scene="steam",
+        task_type="steam_lid_open_close",
+        description="Lift pot lid (releasing steam), move aside, then replace it precisely.",
+        difficulty="medium",
+        seed=0,
+        config_overrides={},
+        failure_overrides={
+            # Barely descend + 1-step grasp → tool never reaches handle → lid not grasped
+            "task": {"phase_steps": {"approach": 50, "descend": 1, "grasp_lid": 1, "lift_lid": 50,
+                                     "hold_open": 80, "return_to_pot": 55, "lower_lid": 50,
+                                     "release": 20, "retract": 40, "hold_done": 120}},
+        },
+    ),
+    BenchmarkTask(
+        task_id="spray_chamber_tray",
+        scene="steam",
+        task_type="spray_chamber_tray",
+        description="Insert a tray into a spray-filled processing chamber.",
+        difficulty="medium",
+        seed=0,
+        config_overrides={},
+        failure_overrides={
+            # Zero grasp threshold → impossible to satisfy dist_xy ≤ 0 → tray never grasped
+            "task": {"grasp_threshold": 0.0},
+        },
+    ),
+    BenchmarkTask(
+        task_id="steam_valve_close",
+        scene="steam",
+        task_type="steam_valve_close",
+        description="Rotate a leaking steam valve to its closed position.",
+        difficulty="hard",
+        seed=0,
+        config_overrides={},
+        failure_overrides={
+            # Only 5 rotate steps → valve barely moves, steam keeps flowing
+            "task": {"phase_steps": {"approach": 55, "contact": 35, "rotate": 5,
+                                     "hold": 30, "retract": 40, "hold_done": 120}},
+        },
+    ),
+]
+
+ALL_TASKS: List[BenchmarkTask] = GRILL_TASKS + LIQUID_TASKS + STEAM_TASKS
 
 
 def get_task(task_id: str) -> BenchmarkTask:

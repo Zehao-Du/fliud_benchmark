@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from benchmark.tasks import ALL_TASKS, GRILL_TASKS, LIQUID_TASKS, BenchmarkTask
+from benchmark.tasks import ALL_TASKS, GRILL_TASKS, LIQUID_TASKS, STEAM_TASKS, BenchmarkTask
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +42,9 @@ def _load_scene_module(scene: str):
     if scene == "liquid":
         path = repo_root / "source/standalone_examples/api/isaacsim.robot.manipulators/franka/franka_stir_liquid.py"
         name = "franka_stir_liquid_vidgen"
+    elif scene == "steam":
+        path = repo_root / "source/standalone_examples/api/isaacsim.robot.manipulators/franka/franka_steam_tasks.py"
+        name = "franka_steam_tasks_vidgen"
     else:
         path = repo_root / "source/standalone_examples/api/isaacsim.robot.manipulators/franka/franka_meat_on_grill.py"
         name = "franka_meat_on_grill_vidgen"
@@ -80,6 +83,8 @@ def _render_trajectory_video(traj_csv: Path, out_video: Path, scene: str, succes
         # Scene bounds for top-down view
         if scene == "grill":
             xmin, xmax, ymin, ymax = 0.22, 0.92, -0.38, 0.34
+        elif scene == "steam":
+            xmin, xmax, ymin, ymax = 0.28, 0.92, -0.32, 0.32
         else:
             xmin, xmax, ymin, ymax = 0.38, 0.74, -0.22, 0.22
 
@@ -111,6 +116,19 @@ def _render_trajectory_video(traj_csv: Path, out_video: Path, scene: str, succes
                     for dx in range(-24, 25):
                         if 0 <= tx + dx < W and 0 <= ty + dy < H:
                             img[ty + dy, tx + dx] = (60, 40, 20)
+            elif scene == "steam":
+                # Draw pot/chamber target as cyan circle
+                try:
+                    ttx_w = float(row.get("target_x", 0.70))
+                    tty_w = float(row.get("target_y", 0.10))
+                    ttx, tty = world_to_px(ttx_w, tty_w)
+                    for dy in range(-16, 17):
+                        for dx in range(-16, 17):
+                            if dx * dx + dy * dy <= 16 * 16:
+                                if 0 <= ttx + dx < W and 0 <= tty + dy < H:
+                                    img[tty + dy, ttx + dx] = (30, 80, 80)
+                except Exception:
+                    pass
             else:
                 cx, cy = world_to_px(0.56, 0.0)
                 for dy in range(-20, 21):
@@ -133,6 +151,24 @@ def _render_trajectory_video(traj_csv: Path, out_video: Path, scene: str, succes
                     my_w = float(row.get("target_y", 0.14))
                     mpx, mpy = world_to_px(mx_w, my_w)
                     draw_circle(img, mpx, mpy, 5, (220, 140, 60))
+                except Exception:
+                    pass
+            elif scene == "steam":
+                # Draw object position + steam centroid
+                try:
+                    ox_w = float(row.get("obj_x", row.get("target_x", 0.7)))
+                    oy_w = float(row.get("obj_y", row.get("target_y", 0.1)))
+                    opx, opy = world_to_px(ox_w, oy_w)
+                    draw_circle(img, opx, opy, 5, (220, 160, 80))
+                except Exception:
+                    pass
+                try:
+                    sx_w = float(row.get("steam_x", 0.7))
+                    sy_w = float(row.get("steam_y", 0.1))
+                    ss = float(row.get("steam_strength", 0))
+                    if ss > 0.05:
+                        spx, spy = world_to_px(sx_w, sy_w)
+                        draw_circle(img, spx, spy, max(3, int(ss * 12)), (160, 210, 220))
                 except Exception:
                     pass
             else:
@@ -187,6 +223,8 @@ def _run_one(task: BenchmarkTask, use_failure: bool, out_video: Path, backend: s
 
     if task.scene == "liquid":
         config = mod.get_preset_config(task.preset)
+    elif task.scene == "steam":
+        config = mod.get_preset_config(task.task_type, task.preset)
     else:
         config = mod.get_preset_config(task.preset, {"scene": {"variation": task.variation}})
 
@@ -204,10 +242,16 @@ def _run_one(task: BenchmarkTask, use_failure: bool, out_video: Path, backend: s
 
     if task.scene == "liquid":
         env_cls = mod.FrankaStirLiquidEnv
+    elif task.scene == "steam":
+        env_cls = mod.FrankaSteamTaskEnv
     else:
         env_cls = mod.FrankaMeatOnGrillEnv
 
-    env = env_cls(config=config, preset=task.preset, backend=backend)
+    if task.scene == "steam":
+        env = env_cls(task_type=task.task_type, config=config, preset=task.preset, backend=backend)
+    else:
+        env = env_cls(config=config, preset=task.preset, backend=backend)
+
     with tempfile.TemporaryDirectory(prefix="vidgen_") as tmp:
         summary, artifacts = env.run_episode(seed=task.seed, output_dir=Path(tmp))
         env.close()
@@ -215,6 +259,8 @@ def _run_one(task: BenchmarkTask, use_failure: bool, out_video: Path, backend: s
         metrics = summary.get("metrics", {}) if isinstance(summary, dict) else {}
         if task.scene == "liquid":
             success = bool(metrics.get("object_lifted", False))
+        elif task.scene == "steam":
+            success = bool(metrics.get("success", False))
         else:
             success = bool(metrics.get("success", False))
         _render_trajectory_video(traj_csv, out_video, task.scene, success)
@@ -245,7 +291,7 @@ def _worker(args_tuple: Tuple) -> Dict:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate benchmark demo videos (success + failure)")
-    parser.add_argument("--scene", choices=["liquid", "grill", "all"], default="all")
+    parser.add_argument("--scene", choices=["liquid", "grill", "steam", "all"], default="all")
     parser.add_argument("--task", default=None, help="Single task_id to render")
     parser.add_argument("--backend", choices=["mock", "isaac", "auto"], default="mock")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/benchmark_videos"))
@@ -264,6 +310,8 @@ def main() -> int:
         tasks = LIQUID_TASKS
     elif args.scene == "grill":
         tasks = GRILL_TASKS
+    elif args.scene == "steam":
+        tasks = STEAM_TASKS
     else:
         tasks = ALL_TASKS
 
