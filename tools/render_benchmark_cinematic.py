@@ -46,6 +46,9 @@ def _load_scene_module(scene: str):
     if scene == "liquid":
         path = repo_root / "source/standalone_examples/api/isaacsim.robot.manipulators/franka/franka_stir_liquid.py"
         name = "franka_stir_liquid_cinematic"
+    elif scene == "steam":
+        path = repo_root / "source/standalone_examples/api/isaacsim.robot.manipulators/franka/franka_steam_tasks.py"
+        name = "franka_steam_tasks_cinematic"
     else:
         path = repo_root / "source/standalone_examples/api/isaacsim.robot.manipulators/franka/franka_meat_on_grill.py"
         name = "franka_meat_on_grill_cinematic"
@@ -153,6 +156,8 @@ def render_task(
 
         if task.scene == "liquid":
             _render_isaac_liquid(task, use_failure, out_video, mod, frames, spp, width, height)
+        elif task.scene == "steam":
+            _render_isaac_steam(task, use_failure, out_video, mod, frames, spp, width, height)
         else:
             _render_isaac_grill(task, use_failure, out_video, mod, frames, spp, width, height)
 
@@ -242,6 +247,78 @@ def _render_isaac_liquid(
             except Exception:
                 pass
             step += 1
+
+        env.close()
+        _frames_to_video(frames_dir, out_video)
+
+
+def _render_isaac_steam(
+    task: BenchmarkTask, use_failure: bool, out_video: Path,
+    mod: Any, frames: int, spp: int, width: int, height: int,
+) -> None:
+    """Isaac cinematic render for steam/spray scenes."""
+    import tempfile
+    config = mod.get_preset_config(task.task_type, task.preset)
+    config["seed"] = task.seed
+    config["headless"] = False
+    config["video"]["enabled"] = False
+
+    overrides = task.failure_overrides if use_failure else task.config_overrides
+    _deep_update(config, overrides)
+
+    # Camera presets per task type
+    _cam_presets = {
+        "steam_pot_place":       {"pos": (0.20, -0.55, 0.55), "look": (0.62, 0.05, 0.12)},
+        "steam_lid_open_close":  {"pos": (0.25, -0.60, 0.58), "look": (0.68, 0.10, 0.14)},
+        "spray_chamber_tray":    {"pos": (0.15, -0.60, 0.52), "look": (0.60, 0.00, 0.14)},
+        "steam_valve_close":     {"pos": (0.20, -0.55, 0.48), "look": (0.60, 0.00, 0.16)},
+    }
+    cam_cfg = _cam_presets.get(task.task_type, {"pos": (0.20, -0.55, 0.50), "look": (0.60, 0.00, 0.12)})
+
+    with tempfile.TemporaryDirectory(prefix="cinematic_steam_") as tmp:
+        frames_dir = Path(tmp) / "frames"
+        frames_dir.mkdir()
+
+        env = mod.FrankaSteamTaskEnv(
+            task_type=task.task_type, config=config, preset=task.preset, backend="isaac"
+        )
+        env.create_scene()
+        env.reset_scene(seed=task.seed)
+
+        try:
+            import omni.kit.app
+            settings = omni.kit.app.get_app().get_settings()
+            settings.set("/rtx/rendermode", "RaytracedLighting")
+            settings.set("/rtx/raytracing/samplesPerPixel", spp)
+            settings.set("/rtx/post/dlss/enabled", False)
+        except Exception:
+            pass
+
+        try:
+            import omni.replicator.core as rep
+            cam = rep.create.camera(
+                position=cam_cfg["pos"],
+                look_at=cam_cfg["look"],
+                focal_length=28.0,
+            )
+            rp = rep.create.render_product(cam, (width, height))
+            writer = rep.WriterRegistry.get("BasicWriter")
+            writer.initialize(output_dir=str(frames_dir), rgb=True)
+            writer.attach([rp])
+        except Exception as exc:
+            print(f"  [steam] replicator setup failed: {exc}, using placeholder")
+            out_video.parent.mkdir(parents=True, exist_ok=True)
+            out_video.write_bytes(b"placeholder")
+            env.close()
+            return
+
+        for _ in range(frames):
+            env.step_sim(1)
+            try:
+                import omni.kit.app
+                omni.kit.app.get_app().update()
+            except Exception:
+                pass
 
         env.close()
         _frames_to_video(frames_dir, out_video)
@@ -370,7 +447,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/benchmark_videos_cinematic"))
     parser.add_argument("--backend", choices=["mock", "isaac"], default="isaac")
-    parser.add_argument("--scene", choices=["liquid", "grill", "all"], default="all")
+    parser.add_argument("--scene", choices=["liquid", "grill", "steam", "all"], default="all")
     parser.add_argument("--task", default=None, help="Single task_id (for quick test)")
     parser.add_argument("--frames", type=int, default=240, help="Frames per episode (240=10s@24fps)")
     parser.add_argument("--spp", type=int, default=16, help="RTX samples per pixel")
@@ -391,6 +468,9 @@ def main() -> int:
     elif args.scene == "grill":
         from benchmark.tasks import GRILL_TASKS
         tasks = GRILL_TASKS
+    elif args.scene == "steam":
+        from benchmark.tasks import STEAM_TASKS
+        tasks = STEAM_TASKS
     else:
         tasks = ALL_TASKS
 
